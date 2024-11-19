@@ -1,0 +1,19 @@
+#Ignore node_modules in sub folders
+**/node_modules/
+# Ignore node_modules
+/node_modules/
+
+# Ignore logs
+/logs
+
+# Ignore vscode settings
+/.vscode/settings.json
+
+# Ignore local development environment variables
+.env
+
+# Ignore dist folders
+**/dist/
+
+# Ignore engine folder
+/engine/
