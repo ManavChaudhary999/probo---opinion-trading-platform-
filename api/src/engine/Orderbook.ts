@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import {OrderBookType, MessageFromAPI, BUY_ORDER, SELL_ORDER} from "../types";
 import { StockBalances } from "./StockBalances";
 import {UserBalances} from "./UserBalances";
@@ -7,26 +9,21 @@ const stockBalances = StockBalances.getInstance();
 
 export class OrderBook {
     private static instance: OrderBook | null = null;
-    private state: OrderBookType = {
-        "BTC_USDT_10_Oct_2024_9_30": {
-            yes: {
-                "4": {
-                    total: 100,
-                    key: 1,
-                    orders: {
-                        1: {
-                            "userId": "manav",
-                            "type": "sell",
-                            "quantity": 100
-                        }
-                    },
-                },
-            },
-            no: {}
-        }
-    };
+    private state: OrderBookType = {};
     
     private constructor() {
+        let snapshot: Buffer | null = null;
+
+        try {
+            snapshot = fs.readFileSync(path.join(__dirname, '../../snapshot.json'));
+        } catch (error) {
+            console.log("Error loading snapshot: ", error);
+        }
+
+        if(snapshot) {
+            const snapshotData = JSON.parse(snapshot.toString());
+            this.state = snapshotData.orderbook;
+        }
     }
 
     public static getInstance() : OrderBook {
@@ -54,16 +51,17 @@ export class OrderBook {
 
     public enusreStockSymbol(stockSymbol: string, stockType: "yes" | "no", price: number) {
         if(!this.state[stockSymbol]) {
-            this.state[stockSymbol] = {
-                "yes": {},
-                "no": {}
-            }
+            this.createStock(stockSymbol);
         }
+        
         if(!this.state[stockSymbol][stockType][price]) {
-            this.state[stockSymbol][stockType][price] = {
-                total: 0,
-                key: 0,
-                orders: {},
+            this.state[stockSymbol][stockType] = {
+                ...this.state[stockSymbol][stockType],
+                [price]: {
+                    total: 0,
+                    key: 0,
+                    orders: {},
+                }
             }
         }
     }
@@ -71,76 +69,160 @@ export class OrderBook {
     public processOrder(order: MessageFromAPI) {
         const {userId, stockSymbol, price, quantity, stockType} = order.payload;
 
-        const oppStockType = stockType === "yes" ? "no" : "yes";
-        const oppStockPrice = 10 - price;
-        const cost = order.type === BUY_ORDER ? oppStockPrice * quantity : price * quantity;
+        if(order.type === SELL_ORDER) {
+            this.PlaceSellOrder(stockSymbol, userId, stockType, price, quantity);
+        } else {
+            this.PlaceBuyOrder(stockSymbol, userId, stockType, price, quantity);
+        }
 
-        // Lock required funds or stocks
+        // // Publish updated state
+        // // redis.publish(stockSymbol, JSON.stringify(this.state[stockSymbol]));
+    }
+
+    private PlaceBuyOrder(stockSymbol: string, userId: string, stockType: 'yes' | 'no', price: number, quantity: number) {
+        const oppStockType = stockType === 'yes' ? 'no' : 'yes';
+        const oppStockPrice = 10 - price;
+        const cost = price * quantity;
+
+        this.enusreStockSymbol(stockSymbol, stockType, price);
+        this.enusreStockSymbol(stockSymbol, oppStockType, oppStockPrice);
+
+        if(userBalances.getUserBalance(userId).balance < cost) {
+            throw new Error("Insufficient funds");
+            return;
+        }
+
+        // Lock required funds
         userBalances.lockBalance(userId, cost);
 
-        const targetStockType = order.type === BUY_ORDER ? oppStockType : stockType;
-        const targetPrice = order.type === BUY_ORDER ? oppStockPrice : price;
+        let reqQuant = quantity;
 
-        this.enusreStockSymbol(stockSymbol, targetStockType, targetPrice);
+        // Fetch Side price orderbook to match
+        const sideOrders = this.state[stockSymbol][stockType][price];
+        for(const key in sideOrders.orders) {
+            const sideOrder = sideOrders.orders[key];
 
+            if(reqQuant === 0) break;
+
+            if(sideOrder.userId === userId || sideOrder.type === "buy") continue;
+
+            const {userId: oppUserId, quantity: availableQuant} = sideOrder;
+
+            const matchedQuantity = Math.min(reqQuant, availableQuant);
+
+            // Unlock and debit required funds from user and increase stock quantity
+            stockBalances.increaseStock(userId, stockSymbol, matchedQuantity, stockType);
+            userBalances.decreaseLockBalance(userId, price * matchedQuantity);
+
+            // Unlock and credit required funds to selling user and decrease stock quantity
+            stockBalances.decreaseLockStock(oppUserId, stockSymbol, matchedQuantity, stockType);
+            userBalances.increaseBalance(oppUserId, price * matchedQuantity);
+
+            sideOrders.total -= matchedQuantity;
+            sideOrder.quantity -= matchedQuantity;
+            reqQuant -= matchedQuantity;
+            if(sideOrder.quantity === 0) delete sideOrders.orders[key];
+            if(sideOrders.total === 0) sideOrders.key = 0;
+        }
+
+        // Fetch Opposite price orderbook to match
+        const oppOrders = this.state[stockSymbol][oppStockType][oppStockPrice];
+        for(const key in oppOrders.orders) {
+            const oppOrder = oppOrders.orders[key];
+
+            if(reqQuant === 0) break;
+
+            if(oppOrder.userId === userId || oppOrder.type === "sell")   continue;
+
+            const {userId: oppUserId, quantity: availableQuant} = oppOrder;
+
+            const matchedQuantity = Math.min(reqQuant, availableQuant);
+            
+            // Unlock and debit required funds from user and increase stock quantity
+            stockBalances.increaseStock(userId, stockSymbol, matchedQuantity, stockType);
+            userBalances.decreaseLockBalance(userId, price * matchedQuantity);
+            // Unlock and debit required funds from selling user and increase stock quantity
+            stockBalances.increaseStock(oppUserId, stockSymbol, matchedQuantity, oppStockType);
+            userBalances.decreaseLockBalance(oppUserId, oppStockPrice * matchedQuantity);
+            
+            oppOrders.total -= matchedQuantity;
+            oppOrder.quantity -= matchedQuantity;
+            reqQuant -= matchedQuantity;
+            if(oppOrder.quantity === 0) delete oppOrders.orders[key];
+            if(oppOrders.total === 0) oppOrders.key = 0;
+        }
+
+        if(reqQuant === 0) {
+            console.log("Order placed successfully and all quantity matched");
+            return;
+        }
+    
         // Add the order to the order book
-        const orderBook = this.state[stockSymbol][targetStockType][targetPrice];
-        orderBook.total += quantity;
-        const orderKey = ++orderBook.key; // Increment key for a new order
-        orderBook.orders[orderKey] = { userId, type: order.type === BUY_ORDER ? "buy" : "sell", quantity };
-
-        console.log("-------------- Process Order -----------------");
-        console.log("Side Stock Type: ", stockType);
-        console.log("Opp Stock Type: ", oppStockType);
-
-        // Attempt matching
-        this.matcher(stockSymbol, targetStockType, targetPrice);
-
-        // Publish updated state
-        // redis.publish(stockSymbol, JSON.stringify(this.state[stockSymbol]));
+        const orderBook = this.state[stockSymbol][stockType][price];
+        orderBook.total += reqQuant;
+        const orderKey = ++orderBook.key;
+        orderBook.orders[orderKey] = { userId, type: "buy", quantity: reqQuant };
+        console.log("Order placed successfully and some quantity matched");
     }
 
-    private matcher(stockSymbol: string, stockType: 'yes' | 'no', price: number) {
+    private PlaceSellOrder(stockSymbol: string, userId: string, stockType: 'yes' | 'no', price: number, quantity: number) {
         const oppStockType = stockType === 'yes' ? 'no' : 'yes';
-        const oppPrices = Object.keys(this.state[stockSymbol][oppStockType]).map(Number).sort((a, b) => a - b);
-    
-        console.log("-------------- Matcher -----------------");
-        console.log("Side Stock Type: ", oppStockType);
-        console.log("Opp Stock Type: ", stockType);
+        const oppStockPrice = 10 - price;
+        const cost = price * quantity;
 
+        this.enusreStockSymbol(stockSymbol, stockType, price);
 
-        for (const oppPrice of oppPrices) {
-          const reqQuant = this.state[stockSymbol][stockType][price].total;
-          const availableQuant = this.state[stockSymbol][oppStockType][oppPrice].total;
-    
-          if (oppPrice <= (10 - price) && reqQuant > 0 && availableQuant > 0) {
-            this.matchOrders(stockSymbol, stockType, price, oppPrice);
-          }
+        if(stockBalances.getUserStockBalance(userId, stockSymbol, stockType).quantity < quantity) {
+            throw new Error("Insufficient stocks");
+            return;
         }
-    }
-      
-    private matchOrders(stockSymbol: string, stockType: 'yes' | 'no', price: number, oppPrice: number) {
-        const oppStockType = stockType === 'yes' ? 'no' : 'yes';
-        const side = this.state[stockSymbol][stockType][price]; // 4
-        const opp = this.state[stockSymbol][oppStockType][oppPrice]; // 6
 
-        console.log("-------------- Match Orders -----------------");
-        console.log("Side Stock Type: ", oppStockType);
-        console.log("Opp Stock Type: ", stockType);
+        // Lock required Stocks
+        stockBalances.lockStock(userId, stockSymbol, quantity, stockType);
 
-        while (side.total > 0 && opp.total > 0) {
-            const sKey = this.lowestKey(Object.keys(side.orders).map(Number));
-            const oKey = this.lowestKey(Object.keys(opp.orders).map(Number));
+        let reqQuant = quantity;
 
-            const matchedQuant = this.processMatch(stockSymbol, side, opp, sKey, oKey, stockType, oppStockType, price, oppPrice);
+        // Fetch Side price orderbook to match already buy demand waiting order
+        const sideOrders = this.state[stockSymbol][stockType][price];
+        console.log("Side Orders", sideOrders);
+        for(const key in sideOrders.orders) {
+            const sideOrder = sideOrders.orders[key];
 
-            side.total -= matchedQuant;
-            opp.total -= matchedQuant;
+            console.log("Inside Loop");
+
+            if(reqQuant === 0) break;
+
+            if(sideOrder.userId === userId || sideOrder.type === "sell") continue;
+
+            const {userId: oppUserId, quantity: availableQuant} = sideOrder;
+
+            const matchedQuantity = Math.min(reqQuant, availableQuant);
+
+            // Unlock and debit required stocks from selling user and add credit amount
+            stockBalances.decreaseLockStock(userId, stockSymbol, matchedQuantity, stockType);
+            userBalances.increaseBalance(userId, price * matchedQuantity);
+            // Unlock and debit required funds from buying user and increase stock quantity
+            stockBalances.increaseStock(oppUserId, stockSymbol, matchedQuantity, oppStockType);
+            userBalances.decreaseLockBalance(oppUserId, oppStockPrice * matchedQuantity);
+
+            sideOrders.total -= matchedQuantity;
+            sideOrder.quantity -= matchedQuantity;
+            reqQuant -= matchedQuantity;
+            if(sideOrder.quantity === 0) delete sideOrders.orders[key];
+            if(sideOrders.total === 0) sideOrders.key = 0;
         }
-    }
-    
-    private lowestKey(keys: number[]): number {
-        return Math.min(...keys);
+
+        if(reqQuant === 0) {
+            console.log("Order placed successfully and all quantity matched");
+            return;
+        }
+
+        // Add the sell order to the order book
+        const orderBook = this.state[stockSymbol][stockType][price];
+        orderBook.total += reqQuant;
+        const orderKey = ++orderBook.key;
+        orderBook.orders[orderKey] = { userId, type: "sell", quantity: reqQuant };
+        console.log("Order placed successfully and some quantity matched");
     }
 
     private processMatch(stockSymbol: string, side: any, opp: any, sKey: number, oKey: number, stockType1: 'yes' | 'no', stockType2: 'yes' | 'no', price1: number, price2: number) : number {
@@ -155,11 +237,9 @@ export class OrderBook {
         const cost1 = price1 * matchedQuant;
         const cost2 = price2 * matchedQuant;
 
-        console.log("-------------- Process Match -----------------");
-        console.log("Side Stock Type: ", stockType2);
-        console.log("Opp Stock Type: ", stockType1);
-
-        return 100;
+        // console.log("-------------- Process Match -----------------");
+        // console.log("Side Stock Type: ", stockType2);
+        // console.log("Opp Stock Type: ", stockType1);
     
         // Adjust locked balances or stocks
         this.adjustAssets(user1, stockSymbol, type1, stockType1, cost1, quant1, 'deduct');
@@ -178,9 +258,9 @@ export class OrderBook {
     
     private adjustAssets(userId: string, stockSymbol: string, type: 'buy' | 'sell', stockType: 'yes' | 'no', cost: number, quantity: number, action: 'credit' | 'deduct') {
         if (action === 'deduct') {
-          type === 'buy' ? userBalances.decreaseLockBalance(userId, cost) : stockBalances.decreaseLockStock(userId, stockSymbol, quantity, stockType);
+        //   type === 'buy' ? userBalances.decreaseLockBalance(userId, cost) : stockBalances.decreaseLockStock(userId, stockSymbol, quantity, stockType);
         } else {
-          type === 'buy' ? stockBalances.increaseStock(userId, stockSymbol, quantity, stockType) : userBalances.increaseBalance(userId, cost);
+        //   type === 'buy' ? stockBalances.increaseStock(userId, stockSymbol, quantity, stockType) : userBalances.increaseBalance(userId, cost);
         }
     }
     

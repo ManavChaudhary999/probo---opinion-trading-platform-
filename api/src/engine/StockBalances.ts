@@ -1,10 +1,24 @@
+import fs from "fs";
+import path from "path";
 import {StockBalancesType} from "../types";
 
 export class StockBalances {
     private static instance: StockBalances | null = null;
-    private stocks: StockBalancesType = {};
+    private state: StockBalancesType = {};
     
     private constructor() {
+        let snapshot: Buffer | null = null;
+
+        try {
+            snapshot = fs.readFileSync(path.join(__dirname, '../../snapshot.json'));
+        } catch (error) {
+            console.log("Error loading snapshot: ", error);
+        }
+
+        if(snapshot) {
+            const snapshotData = JSON.parse(snapshot.toString());
+            this.state = snapshotData.stockBalances;
+        }
     }
 
     public static getInstance() : StockBalances {
@@ -16,20 +30,24 @@ export class StockBalances {
     }
 
     public getStockBalances() : StockBalancesType {
-        return this.stocks;
+        return this.state;
     }
 
-    public getUserStockBalance(userId: string) {
-        return this.stocks[userId];
+    public getUserStockBalances(userId: string) {
+        return this.state[userId];
+    }
+
+    public getUserStockBalance(userId: string, stockSymbol: string, stockType: "yes" | "no") {
+        return this.state[userId][stockSymbol][stockType];
     }
 
     public createUser(userId: string) {
-        this.stocks[userId] = {}
+        this.state[userId] = {}
     }
 
     public ensureStock(userId: string, stockSymbol: string) {
-        if(!this.stocks[userId][stockSymbol]) {
-            this.stocks[userId][stockSymbol] = {
+        if(!this.state[userId][stockSymbol]) {
+            this.state[userId][stockSymbol] = {
                 yes: {
                     quantity: 0,
                     locked: 0
@@ -44,24 +62,24 @@ export class StockBalances {
 
     public increaseStock(userId: string, stockSymbol: string, quantity: number, stockType: "yes" | "no") {
         this.ensureStock(userId, stockSymbol);
-        this.stocks[userId][stockSymbol][stockType].quantity += quantity
+        this.state[userId][stockSymbol][stockType].quantity += quantity
     }
 
     public decreaseStock(userId: string, stockSymbol: string, quantity: number, stockType: "yes" | "no") {
-        this.stocks[userId][stockSymbol][stockType].quantity -= quantity
+        this.state[userId][stockSymbol][stockType].quantity -= quantity
     }
 
     public lockStock(userId: string, stockSymbol: string, quantity: number, stockType: "yes" | "no") {
-        this.stocks[userId][stockSymbol][stockType].locked += quantity;
+        this.state[userId][stockSymbol][stockType].locked += quantity;
         this.decreaseStock(userId, stockSymbol, quantity, stockType);
     }
 
     public unlockStock(userId: string, stockSymbol: string, quantity: number, stockType: "yes" | "no") {
-        this.stocks[userId][stockSymbol][stockType].locked -= quantity;
+        this.state[userId][stockSymbol][stockType].locked -= quantity;
         this.increaseStock(userId, stockSymbol, quantity, stockType);
     }
 
     public decreaseLockStock(userId: string, stockSymbol: string, quantity: number, stockType: "yes" | "no") {
-        this.stocks[userId][stockSymbol][stockType].locked -= quantity
+        this.state[userId][stockSymbol][stockType].locked -= quantity
     }
 }

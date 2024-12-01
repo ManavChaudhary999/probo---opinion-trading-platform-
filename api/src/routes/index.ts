@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import {Router} from "express";
 import {OrderBook} from "../engine/Orderbook";
 import {UserBalances} from "../engine/UserBalances";
@@ -6,9 +8,19 @@ import {BUY_ORDER, SELL_ORDER} from "../types";
 
 export const router = Router();
 
-const userBalances = UserBalances.getInstance();
 const orderBook = OrderBook.getInstance();
+const userBalances = UserBalances.getInstance();
 const stockBalances = StockBalances.getInstance();
+
+// Save Snapshot every 1 sec
+// setInterval(() => {
+//     const snapshotData = {
+//         orderBook: orderBook.getOrderbook(),
+//         stockBalances: stockBalances.getStockBalances(),
+//         userBalances: userBalances.getInrBalances(),
+//     };
+//     fs.writeFileSync(path.join(__dirname, '../../snapshot.json'), JSON.stringify(snapshotData));
+// }, 1000);
 
 // User Routes
 router.post("/user/create/:userId", (req, res) => {
@@ -26,12 +38,12 @@ router.post("/user/create/:userId", (req, res) => {
     })
 });
 
-router.post("onramp/inr", (req, res) => {
+router.post("/onramp/inr", (req, res) => {
     const {userId, amount} = req.body;
 
     // redisClient.lPush("message" as string, JSON.stringify({type: ON_RAMP, data: req.body}));
 
-    userBalances.increaseBalance(userId, amount);
+    userBalances.increaseBalance(userId, parseInt(amount));
 
     res.json({
         status: "success",
@@ -46,22 +58,30 @@ router.post("/order/buy", (req, res) => {
 
     // redisClient.lPush("message" as string, JSON.stringify({type: BUY_ORDER, data: req.body}));
 
-    orderBook.processOrder({
-        type: BUY_ORDER,
-        payload: req.body
-    })
-
-   res.json({
-       status: "success",
-       message: "Order placed successfully",
-       data: {
-           userId,
-           stockSymbol,
-           price,
-           quantity,
-           stockType
-       }
-    });
+    try {
+        orderBook.processOrder({
+            type: BUY_ORDER,
+            payload: req.body
+        })
+        
+        res.json({
+            status: "success",
+            message: "Order placed successfully",
+            data: {
+                userId,
+                stockSymbol,
+                price,
+                quantity,
+                stockType
+            }
+        });
+    } catch (error) {
+        console.log(error);
+        res.status(401).json({
+            status: "error",
+            message: "Order Cannot be placed",
+        })
+    }
 });
 
 router.post("/order/sell", (req, res) => {
@@ -69,22 +89,30 @@ router.post("/order/sell", (req, res) => {
 
     // redisClient.lPush("message" as string, JSON.stringify({type: SELL_ORDER, data: req.body}));
  
-    orderBook.processOrder({
-        type: SELL_ORDER,
-        payload: req.body
-    })
-
-    res.json({
-        status: "success",
-        message: "Order placed successfully",
-        data: {
-            userId,
-            stockSymbol,
-            price,
-            quantity,
-            stockType
-        }
-     });
+    try {
+        orderBook.processOrder({
+            type: SELL_ORDER,
+            payload: req.body
+        })
+    
+        res.json({
+            status: "success",
+            message: "Order placed successfully",
+            data: {
+                userId,
+                stockSymbol,
+                price,
+                quantity,
+                stockType
+            }
+         });
+    } catch (error) {
+        console.log(error);
+        res.status(401).json({
+            status: "error",
+            message: "Order Cannot be placed",
+        })
+    }
  });
 
 // Orderbook Routes
@@ -153,7 +181,7 @@ router.get("/balances/stock/:userId", (req, res) => {
     res.json({
         status: "success",
         message: "Balances fetched successfully",
-        data: stockBalances.getUserStockBalance(userId)
+        data: stockBalances.getUserStockBalances(userId)
     })
 });
 

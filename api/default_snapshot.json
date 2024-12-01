@@ -1,0 +1,44 @@
+{
+    "orderbook": {
+        "BTC_USDT_10_Oct_2024_9_30": {
+            "yes": {
+                "4": {
+                    "total": 100,
+                    "key": 1,
+                    "orders": {
+                        "1": {
+                            "userId": "manav",
+                            "type": "sell",
+                            "quantity": 100
+                        }
+                    }
+                }
+            },
+            "no": {}
+        }
+    },
+    "userBalances": {
+        "manav": {
+            "balance": 100,
+            "locked": 0
+        },
+        "shubham": {
+            "balance": 200,
+            "locked": 0
+        }
+    },
+    "stockBalances": {
+        "manav": {
+            "BTC_USDT_10_Oct_2024_9_30": {
+                "yes": {
+                    "quantity": 0,
+                    "locked": 100
+                },
+                "no": {
+                    "quantity": 0,
+                    "locked": 0
+                }
+            }
+        }
+    }
+}
