@@ -3,6 +3,7 @@ import path from "path";
 import {OrderBookType, MessageFromAPI, BUY_ORDER, SELL_ORDER} from "../types";
 import { StockBalances } from "./StockBalances";
 import {UserBalances} from "./UserBalances";
+import RedisClient from "./RedisManager";
 
 const userBalances = UserBalances.getInstance();
 const stockBalances = StockBalances.getInstance();
@@ -75,8 +76,8 @@ export class OrderBook {
             this.PlaceBuyOrder(stockSymbol, userId, stockType, price, quantity);
         }
 
-        // // Publish updated state
-        // // redis.publish(stockSymbol, JSON.stringify(this.state[stockSymbol]));
+        // Publish updated state
+        RedisClient.publish(stockSymbol, {stockSymbol: this.state[stockSymbol]});
     }
 
     private PlaceBuyOrder(stockSymbol: string, userId: string, stockType: 'yes' | 'no', price: number, quantity: number) {

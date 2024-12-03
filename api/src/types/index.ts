@@ -1,9 +1,9 @@
 export const BUY_ORDER = "CREATE_ORDER";
 export const SELL_ORDER = "SELL_ORDER";
-export const CREATE_USER = "CREATE_USER";
-export const ON_RAMP = "ON_RAMP";
-export const CREATE_STOCK_SYMBOL = "CREATE_STOCK_SYMBOL";
-export const RESET = "RESET";
+// export const CREATE_USER = "CREATE_USER";
+// export const ON_RAMP = "ON_RAMP";
+// export const CREATE_STOCK_SYMBOL = "CREATE_STOCK_SYMBOL";
+// export const RESET = "RESET";
 
 interface InrBalance {
     balance: number;
@@ -43,7 +43,7 @@ interface TotalOrders {
 export type OrderBookType = Record<string, TotalOrders>;
 
 export type MessageFromAPI = {
-	type: typeof BUY_ORDER;
+	type: typeof BUY_ORDER | typeof SELL_ORDER;
 	payload: {
 		userId: string;
 		stockSymbol: string;
@@ -51,13 +51,8 @@ export type MessageFromAPI = {
 		quantity: number;
 		stockType: "yes" | "no";
 	}
-} | {
-	type: typeof SELL_ORDER;
-	payload: {
-		userId: string;
-		stockSymbol: string;
-		price: number;
-		quantity: number;
-		stockType: "yes" | "no";
-	}
+}
+
+export type MessageFromRedis = {
+	[stockSymbol: string]: TotalOrders;
 }
